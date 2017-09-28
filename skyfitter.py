@@ -23,7 +23,8 @@ obs = ephem.Observer()
 body = ephem.FixedBody()
 body._epoch = 2000
 
-# Blanco
+# SDSS coordinates
+
 obs.lon = '-105:49:13'  # E+
 obs.lat = '32:46:49'  # N+
 
@@ -49,11 +50,7 @@ def getit(ra, dec, x):
     ret['objAz'] = (np.rad2deg(body.az))
     return ret
 
-
-if __name__ == '__main__':
-    cached = True
-    plot = True
-
+def getdata(cached=True):
     if not cached:
         Q = 'select sky_u,sky_g,sky_r,sky_i,sky_z,ramin as ra,decmin as dec,mjd_r as mjd from sdssdr9.field '
         D = sqlutil.get(
@@ -66,17 +63,18 @@ if __name__ == '__main__':
         tab = atpy.Table().read('sdss_sky.fits')
         sky_u, sky_g, sky_r, sky_i, sky_z, ra, dec, mjd = [tab[_] for _
                                                            in 'sky_u,sky_g,sky_r,sky_i,sky_z,ra,dec,mjd'.split(',')]
-
-    # evaluate dates from MJDs
-    times = astropy.time.Time(mjd, format='mjd')
-    xdates = [_.datetime.strftime('%Y/%m/%d %H:%M:%S') for _ in times]
+    return sky_u, sky_g, sky_r, sky_i, sky_z, ra, dec, mjd
 
 
-    # compute the azimuths/altitudes in parallel
-    pool = mp.Pool(16)
+def compute_geometry(ra, dec, xdates, nthreads=16):
+    # compute the azimuts/altitudes in parallel for the list 
+    # of ra,dec's and dates
+
+    pool = mp.Pool(nthreads)
     res = []
     for curr, curd, curx in zip(ra, dec, xdates):
         res.append(pool.apply_async(getit, (curr, curd, curx)))
+
     res1 = None
     for r in res:
         curv = r.get()
@@ -89,20 +87,27 @@ if __name__ == '__main__':
                 res1[k].append(curv[k])
     pool.close()
     pool.join()
+    return res1
+
+if __name__ == '__main__':
+    cached = True
+    plot = True
+
+    sky_u, sky_g, sky_r, sky_i, sky_z, ra, dec, mjd = getdata(cached)
+
+    # evaluate dates from MJDs
+    times = astropy.time.Time(mjd, format='mjd')
+    xdates = [_.datetime.strftime('%Y/%m/%d %H:%M:%S') for _ in times]
+
+    res1 = compute_geometry(ra, dec, xdates)
 
     for k in res1.keys():
         res1[k] = np.array(res1[k])
     for f in ('u', 'g', 'r', 'i', 'z'):
         res1['sky_%s' % f] = eval('sky_%s' % f)
 
-
-    daz = np.abs(res1['sunAz'] - res1['objAz'])
-    daz[daz > 180] = (360 - daz[daz > 180])
-    # delta azimuth between object and sun (ensure it is between 0 and 160)
-
-    xo, yo = cosd(daz) * cosd(res1['objAlt']), sind(daz) * cosd(res1['objAlt'])
-    # projection of the object from the sky into x,y
-    # -1<x<1 0<y<1
+    xo, yo = skymodel.getXY(objAlt=res1['objAlt'],
+                            objAz=res1['objAz'], sunAlt=res1['sunAlt'], sunAz=res1['sunAz'])
 
     minAlt = -18 
     
@@ -110,7 +115,7 @@ if __name__ == '__main__':
     subset = (res1['sunAlt'] > minAlt)& (res1['moonP']<50)
     filts = ('u', 'g', 'r', 'i', 'z')
 
-    def F(p, key):
+    def lossFunc(p, key):
         pred = skymodel.func(p, xo[subset], yo[subset], res1['sunAlt'][subset])
         delt = np.log10(res1[key])[subset] - pred
         # remove crazy outliers
@@ -120,15 +125,20 @@ if __name__ == '__main__':
         # we use L1 norm here for robustness
         return res
 
+
     # fit the model for all the filters
-    params = [scipy.optimize.minimize(F, np.zeros(18), args=('sky_%s' % _,))[
+    param0 = np.zeros(18)
+    params = [scipy.optimize.minimize(lossFunc, param0, args=('sky_%s' % _,))[
         'x'] for _ in filts]
+
 
     # evaluate the model for all the filters
     pred = {}
+    models = {}
     for i, f in enumerate(filts):
         pred[f] = skymodel.func(params[i], xo, yo, res1['sunAlt'])
-
+        np.savetxt('coeffs_%s.txt'%f,params[i])
+    
     # plotting
     if plot:
         import matplotlib.pyplot as plt

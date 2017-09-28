@@ -6,6 +6,18 @@ def sind(x): return np.sin(np.deg2rad(x))
 
 
 
+def getXY(objAlt = None, objAz=None, sunAz = None, sunAlt=None):
+    # projection of the object from the sky into x,y
+    # -1<x<1 0<y<1
+    daz = np.asarray(np.abs(objAz - sunAz))
+    daz[daz>180] = 360-daz[daz>180]
+    # delta azimuth between object and sun (ensure it is between 0 and 160)
+
+    x = cosd(daz) * cosd(objAlt)
+    y = sind(daz) * cosd(objAlt)
+    return x,y
+    
+
 class SkyModel:
     """ Simple class to evaluate the sky brightness
     Construction 
@@ -17,10 +29,7 @@ class SkyModel:
         self.coeffs = coeffs
 
     def __call__ (self, objAz=None, objAlt=None, sunAz=None, sunAlt=None):
-        daz = np.abs(objAz - sunAz)
-        daz[daz>180] = 360-daz
-        x = cosd(daz) * cosd(objAlt)
-        y = sind(daz) * cosd(objAlt)
+        x, y = getXY(objAz=objAz, objAlt=objAlt, sunAz=sunAz, sunAlt=sunAlt)
         retsky = 10**func(self.coeffs, x, y, sunAlt)
         return retsky
 

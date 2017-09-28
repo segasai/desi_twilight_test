@@ -20,9 +20,10 @@ def getXY(objAlt = None, objAz=None, sunAz = None, sunAlt=None):
 
 class SkyModel:
     """ Simple class to evaluate the sky brightness
-    Construction 
-    sm = SkyModel([0]*18)
-    sky = sm(objAz=13,sunAz=44,objAlt=33,sunAlt=-40)
+    Usage: 
+    > sm = SkyModel([0]*18)
+    > sky = sm(objAz=13,sunAz=44,objAlt=33,sunAlt=-40)
+    It returns the sky level given the location of the object and Sun
     """
     def __init__ (self, coeffs=None):
         """ Coeffs - array of poly coefficients """

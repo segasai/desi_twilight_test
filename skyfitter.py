@@ -1,5 +1,4 @@
 import ephem
-import sqlutil
 import astropy.time
 import multiprocessing as mp
 import numpy as np
@@ -52,18 +51,20 @@ def getit(ra, dec, x):
 
 def getdata(cached=True):
     if not cached:
-        Q = 'select sky_u,sky_g,sky_r,sky_i,sky_z,ramin as ra,decmin as dec,mjd_r as mjd from sdssdr9.field '
+        import sqlutil
+        Q = 'select fieldid, sky_u,sky_g,sky_r,sky_i,sky_z,ramin as ra,decmin as dec,mjd_r as mjd from sdssdr9.field '
         D = sqlutil.get(
             Q, host='cappc127', asDict=True)
-        sky_u, sky_g, sky_r, sky_i, sky_z, ra, dec, mjd = D.values()
+        fieldid,sky_u, sky_g, sky_r, sky_i, sky_z, ra, dec, mjd = D.values()
 
         tab = atpy.Table(data=D)
         tab.write('sdss_sky.fits', format='fits', overwrite=True)
     else:
         tab = atpy.Table().read('sdss_sky.fits')
-        sky_u, sky_g, sky_r, sky_i, sky_z, ra, dec, mjd = [tab[_] for _
-                                                           in 'sky_u,sky_g,sky_r,sky_i,sky_z,ra,dec,mjd'.split(',')]
-    return sky_u, sky_g, sky_r, sky_i, sky_z, ra, dec, mjd
+        fieldid, sky_u, sky_g, sky_r, sky_i, sky_z, ra, dec, mjd = [tab[_] for _
+                                                           in 'fieldid,sky_u,sky_g,sky_r,sky_i,sky_z,ra,dec,mjd'.split(',')]
+    return fieldid, sky_u, sky_g, sky_r, sky_i, sky_z, ra, dec, mjd
+
 
 
 def compute_geometry(ra, dec, xdates, nthreads=16):
@@ -114,20 +115,27 @@ if __name__ == '__main__':
     # only use objects where sun is above this altitude in the fit
     subset = (res1['sunAlt'] > minAlt)& (res1['moonP']<50)
     filts = ('u', 'g', 'r', 'i', 'z')
+    
+    polyTimeDeg = 2 # the degree of the time polynomial
+    polyXYDeg = 2 # the degree of spatial polynomial
 
     def lossFunc(p, key):
-        pred = skymodel.func(p, xo[subset], yo[subset], res1['sunAlt'][subset])
+        pred = skymodel.func(p, xo[subset], yo[subset], res1['sunAlt'][subset],
+                             polyTimeDeg, polyXYDeg)
         delt = np.log10(res1[key])[subset] - pred
         # remove crazy outliers
         p1 = scipy.stats.scoreatpercentile(delt, 0.1)
         p2 = scipy.stats.scoreatpercentile(delt, 99.9)
-        res = np.abs(delt[betw(delt, p1, p2)]).sum()
+        #res = np.abs(delt[betw(delt, p1, p2)]).sum()
+        res = np.abs(np.clip(delt,p1, p2)).sum()
         # we use L1 norm here for robustness
         return res
 
 
     # fit the model for all the filters
-    param0 = np.zeros(18)
+    nparam = ((polyTimeDeg+1) * (polyXYDeg+1) * (polyXYDeg+2))//2
+    param0 = np.zeros(nparam)
+
     params = [scipy.optimize.minimize(lossFunc, param0, args=('sky_%s' % _,))[
         'x'] for _ in filts]
 
@@ -136,7 +144,8 @@ if __name__ == '__main__':
     pred = {}
     models = {}
     for i, f in enumerate(filts):
-        pred[f] = skymodel.func(params[i], xo, yo, res1['sunAlt'])
+        pred[f] = skymodel.func(params[i], xo, yo, res1['sunAlt'], polyTimeDeg,
+                                polyXYDeg)
         np.savetxt('coeffs_%s.txt'%f,params[i])
     
     # plotting
@@ -151,7 +160,7 @@ if __name__ == '__main__':
                 yt='log10(sky_{predicted})'
             else:
                 yt=None
-            tvhist2d(np.log10(res1['sky_%s' % f]), pred[f], minb, maxb, minb, maxb, normx='sum', ind=res1['sunAlt'] > -20, title='%s' % f, vmax=0.3,
+            tvhist2d(np.log10(res1['sky_%s' % f]), pred[f], minb, maxb, minb, maxb, normx='sum', ind=(res1['sunAlt'] > -20)&(res1['moonP']<50), title='%s' % f, vmax=0.3,
                      noerase=True, xtitle='log10(sky_{observed})',ytitle=yt)
             oplot([minb, maxb], [minb, maxb], color='red')
         plt.gcf().set_size_inches((10, 4))
@@ -169,12 +178,12 @@ if __name__ == '__main__':
         for ii, f in enumerate(filts):
             plt.clf()
             for i, a in enumerate(angs):
-                xind = betw(res1['sunAlt'], a - 0.5, a + 0.5)
+                xind = betw(res1['sunAlt'], a - 0.5, a + 0.5) & (res1['moonP']<50)
                 plt.subplot(nangs, 3, i * 3 + 1)
                 if i==0:
                     tit1='log10(sky) data'
-                    tit2='sky resid'
-                    tit3='model'
+                    tit2='sky residuals '
+                    tit3='log10(model)'
                 else:
                     tit1,tit2,tit3=[None]*3
                 tvhist2d(xo, yo, -edge, edge, 0, edge, ind=xind, weights=np.log10(res1['sky_%s' % f]), statistic='median', vmin=minb, vmax=maxb, cmap=cm,
@@ -184,9 +193,9 @@ if __name__ == '__main__':
                          noerase=True, bins=bins,title=tit2)
                 plt.subplot(nangs, 3, i * 3 + 3)
                 curpred = skymodel.func(
-                    params[ii], xgrid, ygrid, xgrid * 0 + a)
+                    params[ii], xgrid, ygrid, xgrid * 0 + a, polyTimeDeg, polyXYDeg)
                 tvhist2d(xgrid, ygrid, -edge, edge, 0, edge, weights=curpred, statistic='median', vmin=minb, vmax=maxb, cmap=cm, noerase=True,
-                         bins=sh,title=tit3)
+                         bins=sh, title=tit3)
             plt.gcf().set_size_inches((10, 20))
             plt.tight_layout()
             plt.savefig('map_%s.png' % f)

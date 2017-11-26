@@ -3,7 +3,7 @@ import skymodel
 
 ucoeffs = np.loadtxt('coeffs_u.txt')
 
-sm_u=skymodel.SkyModel(ucoeffs)
+sm_u=skymodel.SkyModel(ucoeffs, 2, 2)
 
 # print the sky level in the u-band in nanomaggies/sq arcsec
 print (sm_u(sunAz=30, sunAlt=-30, objAz=130, objAlt=40))
